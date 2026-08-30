@@ -1,0 +1,11 @@
+# FreeToken ROCm 10.x-compatible MI50 / gfx906 / Linux x86_64 constraints.
+#
+# This channel targets the compatible HIP driver and its published Torch/device
+# artifacts.  MI50 is intentionally a Linux-only lane; do not use this file with
+# the Windows installer.  The driver must provide the standard HIP ABI and an
+# amdhip64-compatible RCCL stack.
+
+torch==2.11.0
+triton==3.6.0
+apache-tvm-ffi==0.1.13.post3
+flashlib==0.3.0

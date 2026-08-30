@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import sys
 from typing import Callable, Dict, Generic, TypeVar
+
+if sys.platform == "win32":
+    # zmq.asyncio relies on add_reader/add_writer, which the default Windows
+    # ProactorEventLoop does not implement.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import msgpack
 import zmq

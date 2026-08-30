@@ -123,7 +123,7 @@ class GptOssMxfp4TritonMoELayer(MoELayer):
         router_logits: torch.Tensor,
     ) -> torch.Tensor:
         if not hidden_states.is_cuda:
-            raise RuntimeError("GPT-OSS MXFP4 MoE requires the Triton CUDA kernel")
+            raise RuntimeError("GPT-OSS MXFP4 MoE requires the Triton GPU kernel")
         if not hidden_states.is_contiguous():
             hidden_states = hidden_states.contiguous()
         if not router_logits.is_contiguous():

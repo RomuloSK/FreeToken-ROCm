@@ -8,6 +8,7 @@ from typing import List, Tuple
 import torch
 from freetoken.distributed import DistributedInfo
 from freetoken.scheduler import SchedulerConfig
+from freetoken.scheduler.config import _zmq_addr
 from freetoken.utils import init_logger
 
 
@@ -50,13 +51,13 @@ class ServerArgs(SchedulerConfig):
 
     @property
     def zmq_frontend_addr(self) -> str:
-        return "ipc:///tmp/freetoken_3" + self._unique_suffix
+        return _zmq_addr(3, self._unique_suffix)
 
     @property
     def zmq_tokenizer_addr(self) -> str:
         if self.share_tokenizer:
             return self.zmq_detokenizer_addr
-        result = "ipc:///tmp/freetoken_4" + self._unique_suffix
+        result = _zmq_addr(4, self._unique_suffix)
         assert result != self.zmq_detokenizer_addr
         return result
 
@@ -310,10 +311,11 @@ def parse_args(
 
     parser.add_argument(
         "--cuda-graph-max-bs",
+        "--graph-max-bs",
         "--graph",
         type=int,
         default=ServerArgs.cuda_graph_max_bs,
-        help="The maximum batch size for CUDA graph capture. None means auto-tuning based on the GPU memory.",
+        help="The maximum batch size for GPU graph capture. None means auto-tuning based on GPU memory.",
     )
 
     parser.add_argument(

@@ -15,6 +15,7 @@ import torch
 import triton
 import triton.language as tl
 
+from freetoken.kernel.triton.compat import gdc_launch_dependents, gdc_wait
 from freetoken.utils.arch import is_sm90_supported
 
 
@@ -55,7 +56,7 @@ def _router_triton_kernel(
     mask_n = offs_n < N
 
     if launch_pdl:
-        tl.extra.cuda.gdc_wait()
+        gdc_wait()
 
     # offs_m * stride can overflow int32 for large token counts.
     row_ptr = scores_ptr + offs_m[:, None].to(tl.int64) * stride_sm + offs_n[None, :] * stride_sn
@@ -89,7 +90,7 @@ def _router_triton_kernel(
         cur = tl.where(offs_n[None, :] == win_lane, -float("inf"), cur)
 
     if launch_pdl:
-        tl.extra.cuda.gdc_launch_dependents()
+        gdc_launch_dependents()
 
     if RENORMALIZE:
         routed_sum = tl.sum(tl.where(mask_k[None, :], selected_vals, 0.0), axis=1)[:, None]

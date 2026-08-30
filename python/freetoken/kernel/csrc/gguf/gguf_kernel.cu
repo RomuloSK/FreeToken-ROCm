@@ -1,8 +1,17 @@
 // Adatped from
 // https://github.com/vllm-project/vllm/blob/755ed7b05be4743237d3339c4ff8c22bcaae04f4/csrc/quantization/gguf/gguf_kernel.cu
 #include <c10/cuda/CUDAGuard.h>
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#include <hip/hip_runtime.h>
+// The vendored llama.cpp wrappers use CUDA's stream spelling.  PyTorch's HIP
+// build deliberately keeps the CUDA namespace/device type for ABI
+// compatibility, while hipcc exposes the native HIP stream handle.
+using cudaStream_t = hipStream_t;
+#else
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#endif
 #include <torch/all.h>
 
 // dont use clang-format here, it breaks the include order

@@ -12,6 +12,7 @@ import triton
 import triton.language as tl
 
 from freetoken.utils.arch import is_sm90_supported
+from freetoken.kernel.triton.compat import gdc_launch_dependents, gdc_wait
 
 
 @functools.cache
@@ -48,7 +49,7 @@ def _grouped_gemma_rmsnorm_kernel(
     w_offs = offs_g if W_SHARED else offsets
 
     if launch_pdl:
-        tl.extra.cuda.gdc_wait()
+        gdc_wait()
 
     x = tl.load(x_ptr + row * stride_x + offsets, mask, other=0.0).to(tl.float32)
     w = tl.load(w_ptr + w_offs, mask, other=0.0)
@@ -59,7 +60,7 @@ def _grouped_gemma_rmsnorm_kernel(
     y += y * w.to(tl.float32)
 
     if launch_pdl:
-        tl.extra.cuda.gdc_launch_dependents()
+        gdc_launch_dependents()
     tl.store(y_ptr + row * stride_y + offsets, y, mask)
 
 
@@ -106,13 +107,13 @@ def _hc_silu_kernel(
     mask = offs < DIM
 
     if launch_pdl:
-        tl.extra.cuda.gdc_wait()
+        gdc_wait()
 
     x = tl.load(x_ptr + row * stride_x + offs, mask).to(tl.float32) / HC
     y = x * tl.sigmoid(x)
 
     if launch_pdl:
-        tl.extra.cuda.gdc_launch_dependents()
+        gdc_launch_dependents()
     tl.store(y_ptr + row * stride_y + offs, y, mask)
 
 
@@ -154,7 +155,7 @@ def _hc_gate_mix_kernel(
     mask = offs_inner < HC_DIM
 
     if launch_pdl:
-        tl.extra.cuda.gdc_wait()
+        gdc_wait()
 
     # The constexpr loop is unrolled and keeps one stream live at a time.
     # Materializing [HC, BLOCK_SIZE] more than doubles latency at large M.
@@ -167,7 +168,7 @@ def _hc_gate_mix_kernel(
     acc /= HC
 
     if launch_pdl:
-        tl.extra.cuda.gdc_launch_dependents()
+        gdc_launch_dependents()
     tl.store(y_ptr + row * stride_y + offs_inner, acc, mask)
 
 
@@ -224,7 +225,7 @@ def _hc_combine_kernel(
     mask = mask_hc[:, None] & mask_inner[None, :]
 
     if launch_pdl:
-        tl.extra.cuda.gdc_wait()
+        gdc_wait()
 
     inj = tl.load(inj_ptr + row * stride_inj + offs_hc, mask_hc, other=0.0)
     block = tl.load(block_ptr + row * stride_block + offs_inner, mask_inner, other=0.0)
@@ -236,7 +237,7 @@ def _hc_combine_kernel(
     out = res.to(tl.float32) + block.to(tl.float32)[None, :] * inj[:, None]
 
     if launch_pdl:
-        tl.extra.cuda.gdc_launch_dependents()
+        gdc_launch_dependents()
     tl.store(out_ptr + row * stride_out + offs, out, mask=mask)
 
 
@@ -311,7 +312,7 @@ def _hc_combine_norm_kernel(
     w_offs = offs_inner if W_SHARED else offs
 
     if launch_pdl:
-        tl.extra.cuda.gdc_wait()
+        gdc_wait()
 
     # Start the uncached residual load first, then issue the other combine
     # loads before consuming any of them.
@@ -332,7 +333,7 @@ def _hc_combine_norm_kernel(
     rrms = tl.rsqrt(sum_sq / HC_DIM + EPS)
 
     if launch_pdl:
-        tl.extra.cuda.gdc_launch_dependents()
+        gdc_launch_dependents()
 
     # Loading the weight earlier helps decode but keeps the tile live across
     # the reduction and regresses larger batches, so defer it to the norm.

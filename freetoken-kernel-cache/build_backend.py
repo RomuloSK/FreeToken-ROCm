@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -38,6 +39,48 @@ def _cuda_version_suffix() -> str:
         import torch
     except Exception:
         return ""
+
+    hip_version = getattr(torch.version, "hip", None)
+    if hip_version:
+        # ROCm 10.x MI50 wheels are intentionally stamped separately from the
+        # public ROCm 7.14 lane.  Include the selected GFX target as a local
+        # version segment so a cache built for gfx1102 can never be mistaken
+        # for a gfx906 cache by an installer or CI artifact collector.
+        _check_toolchain()
+        match = re.search(r"(\d+\.\d+)", str(hip_version))
+        channel = match.group(1) if match else str(hip_version)
+        arch_raw = os.getenv("FREETOKEN_KERNEL_CACHE_ARCHES", "") or os.getenv(
+            "FREETOKEN_ROCM_ARCH", ""
+        )
+        # Accept both the singular installer variable and a list supplied by
+        # cross-compilation jobs; the wheel stamp represents the first target
+        # and must never contain whitespace or a comma.
+        arch_values = [
+            value.split(":", 1)[0]
+            for value in arch_raw.replace(",", " ").replace(";", " ").split()
+        ]
+        if not arch_values:
+            arch_values = [
+                value.split(":", 1)[0]
+                for value in os.getenv("FREETOKEN_ROCM_ARCH_LIST", "")
+                .replace(",", " ")
+                .replace(";", " ")
+                .split()
+            ]
+        arch_raw = arch_values[0] if arch_values else ""
+        if not arch_raw:
+            try:
+                from freetoken.kernel._toolchain import rocm_arch_list
+
+                arch_raw = (rocm_arch_list() or [""])[0]
+            except Exception:
+                arch_raw = ""
+        all_arch_values = [value.lower() for value in arch_values if value.lower().startswith("gfx")]
+        if len(set(all_arch_values)) > 1:
+            arch_segment = ".gfxfat"
+        else:
+            arch_segment = f".gfx{arch_raw[3:]}" if arch_raw.lower().startswith("gfx") else ""
+        return f"+rocm{channel}{arch_segment}"
 
     cuda_version = getattr(torch.version, "cuda", None)
     if not cuda_version:
@@ -100,7 +143,9 @@ def _build_jit_cache() -> None:
         "yes",
         "on",
     }
-    # Multi-arch fatbin: one SASS cubin per listed arch, plus the PTX of the highest one.
+    # Multi-arch fatbin: one image per listed arch. CUDA uses the historical
+    # ``TVM_FFI_CUDA_ARCH_LIST`` spelling; HIP uses explicit gfx targets so a
+    # ROCm 10.x/gfx906 build is never inferred from the host compiler default.
     # A GPU whose arch is not listed and is below the highest one has no usable image.
     #   8.0  -> A100, A800, A30                      (Ampere, datacenter)
     #   8.6  -> RTX 30 series, A10, A40              (Ampere, consumer / workstation)
@@ -108,11 +153,32 @@ def _build_jit_cache() -> None:
     #   9.0  -> H100, H800, H20                      (Hopper)
     #   10.0 -> B200, B100, GB200                    (Blackwell, datacenter)
     #   12.0 -> RTX 50 series, RTX PRO 6000 Blackwell (Blackwell, consumer / workstation)
-    # Override with FREETOKEN_KERNEL_CACHE_ARCHES (space-separated maj.min) or
-    # TVM_FFI_CUDA_ARCH_LIST directly. Needs an nvcc that supports every listed arch.
-    if "TVM_FFI_CUDA_ARCH_LIST" not in os.environ:
-        os.environ["TVM_FFI_CUDA_ARCH_LIST"] = os.getenv(
-            "FREETOKEN_KERNEL_CACHE_ARCHES", "8.0 8.6 8.9 9.0 10.0 12.0"
+    # Override with FREETOKEN_KERNEL_CACHE_ARCHES.  The value is interpreted
+    # according to the active Torch runtime (``8.0 8.6`` for CUDA or
+    # ``gfx906 gfx1102`` for HIP).
+    try:
+        import torch
+
+        is_hip = bool(getattr(torch.version, "hip", None))
+    except Exception:
+        is_hip = False
+    requested_arches = os.getenv("FREETOKEN_KERNEL_CACHE_ARCHES", "").strip()
+    if is_hip:
+        if "TVM_FFI_ROCM_ARCH_LIST" not in os.environ:
+            os.environ["TVM_FFI_ROCM_ARCH_LIST"] = requested_arches or os.getenv(
+                "FREETOKEN_ROCM_ARCH_LIST",
+                os.getenv(
+                    "FREETOKEN_ROCM_ARCH",
+                    # Cross-compile all maintained Radeon/Instinct targets by
+                    # default. Channel builds can narrow this list with
+                    # FREETOKEN_KERNEL_CACHE_ARCHES or FREETOKEN_ROCM_ARCH.
+                    "gfx1030 gfx1100 gfx1101 gfx1102 gfx1200 gfx1201 "
+                    "gfx908 gfx90a gfx942 gfx950 gfx906",
+                ),
+            )
+    elif "TVM_FFI_CUDA_ARCH_LIST" not in os.environ:
+        os.environ["TVM_FFI_CUDA_ARCH_LIST"] = requested_arches or (
+            "8.0 8.6 8.9 9.0 10.0 12.0"
         )
     compile_and_package_kernels(
         out_dir=out_dir,

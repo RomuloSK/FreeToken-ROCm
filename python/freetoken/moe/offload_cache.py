@@ -253,6 +253,13 @@ class OffloadMoeCache:
         # Source pointers are per layer (_copy_src_ptrs[layer_id] -> [num_banks] device
         # tensor); dst/feat are layer-invariant.
         self._copy_fused_ok = False
+        # True only after every pinned source bank has a valid device alias.
+        # HIP drivers may successfully register host pages while refusing to
+        # expose an identity/mapped pointer; in that case all movement must use
+        # an ordinary staged H2D copy rather than dereferencing host VA in a
+        # kernel.
+        self._mapped_host_ok = False
+        self._staged_copy_required = False
         self._copy_dst_ptrs: torch.Tensor | None = None
         self._copy_src_ptrs: list[torch.Tensor] | None = None
         self._copy_feat_bytes: torch.Tensor | None = None
@@ -358,6 +365,8 @@ class OffloadMoeCache:
         address is not 16-byte aligned, or via FREETOKEN_FUSED_COPY=0.
         """
         self._copy_fused_ok = False
+        self._mapped_host_ok = False
+        self._staged_copy_required = False
         self._copy_dst_ptrs = None
         self._copy_src_ptrs = None
         self._copy_feat_bytes = None
@@ -367,16 +376,43 @@ class OffloadMoeCache:
         self._gather_bank_ids: list[int] = []
         self._gather_dst_ptrs: torch.Tensor | None = None
         self._gather_feat_bytes: torch.Tensor | None = None
-        if not _FUSED_COPY or self.device.type != "cuda" or not self.banks:
+        if self.device.type != "cuda" or not self.banks:
             return
         from freetoken.kernel.pinned import device_ptr
 
+        if not _FUSED_COPY:
+            # Even with the legacy per-bank path, probe every registered source
+            # so graph capture can be disabled before fast_index_copy attempts
+            # to dereference an unmapped HIP host pointer.
+            probed = False
+            for per_layer, _ in self.banks:
+                for layer_id, source in enumerate(per_layer):
+                    if layer_id in self._unpinned_layers:
+                        continue
+                    probed = True
+                    try:
+                        device_ptr(source)
+                    except Exception:
+                        self._staged_copy_required = True
+                    else:
+                        # Keep probing every bank/layer: one source can be
+                        # mapped while another fails (notably on mixed
+                        # Windows/HIP allocations), and the fallback must be
+                        # selected before graph capture in that case.
+                        pass
+            self._mapped_host_ok = probed and not self._staged_copy_required
+            return
+
         dst_ptrs, feats = [], []
+        geometry_ok = True
         layer_src_ptrs = [[] for _ in range(self.num_layers)]
         for per_layer, cache in self.banks:
             feat = math.prod(per_layer[0].shape[1:]) * per_layer[0].element_size()
             if feat % 16 != 0 or cache.data_ptr() % 16 != 0:
-                return  # leave fused disabled; copy_missing uses the per-bank path
+                # Keep probing host mappings below: an aligned host alias can
+                # still use the per-bank fast path when the fused descriptor's
+                # 16-byte geometry is unavailable.
+                geometry_ok = False
             for layer_id, source in enumerate(per_layer):
                 if layer_id in self._unpinned_layers:
                     # unregistered layer: no device alias exists, and the row is never consumed (CPU decode; pageable prefill)
@@ -386,12 +422,26 @@ class OffloadMoeCache:
                 # The kernel dereferences these on the GPU, so store each host bank's
                 # device alias (== data_ptr() under UVA identity; differs on
                 # Windows/WDDM).
-                src_dev = device_ptr(source)
-                if src_dev % 16 != 0:
+                try:
+                    src_dev = device_ptr(source)
+                except Exception as exc:  # noqa: BLE001 - capability probe; staged fallback is correct
+                    self._staged_copy_required = True
+                    logger.warning(
+                        "Mapped host pointer unavailable for MoE bank %s layer %d (%s); "
+                        "using staged H2D copies",
+                        self.bank_schema[len(dst_ptrs)],
+                        layer_id,
+                        exc,
+                    )
                     return
+                if src_dev % 16 != 0:
+                    geometry_ok = False
                 layer_src_ptrs[layer_id].append(src_dev)
             dst_ptrs.append(cache.data_ptr())
             feats.append(feat)
+        if not geometry_ok:
+            self._mapped_host_ok = True
+            return  # copy_missing uses the per-bank mapped-pointer path
         self._copy_dst_ptrs = torch.tensor(dst_ptrs, dtype=torch.int64, device=self.device)
         self._copy_src_ptrs = [
             torch.tensor(ptrs, dtype=torch.int64, device=self.device)
@@ -411,6 +461,7 @@ class OffloadMoeCache:
             self._gather_dst_ptrs = self._copy_dst_ptrs[self._gather_bank_ids].contiguous()
             self._gather_feat_bytes = self._copy_feat_bytes[self._gather_bank_ids].contiguous()
         self._copy_fused_ok = True
+        self._mapped_host_ok = True
 
     def validate_rebuild(self, cache_size: int) -> None:
         """Pure geometry validation of a rebuild target (no GPU side effects).
@@ -1006,6 +1057,23 @@ class OffloadMoeCache:
                 self.src_indices,
                 self.num_indices,
             )
+            return
+
+        if not self._mapped_host_ok:
+            # HIP/Windows drivers can provide pinned memory for asynchronous
+            # copies without exposing a device alias.  Materialise the small
+            # index list on the host and let Torch enqueue conventional staged
+            # H2D transfers.  This path is deliberately outside graph capture;
+            # callers disable graph capture when a layer is pageable or mapped
+            # host memory is unavailable.
+            count = int(self.num_indices.item())
+            if count <= 0:
+                return
+            dst_indices = self.evict_slots[:count].detach().cpu()
+            src_indices = self.src_indices[:count].detach().cpu()
+            for per_layer, cache in self.banks:
+                rows = per_layer[layer_id].index_select(0, src_indices).contiguous()
+                cache.index_copy_(0, dst_indices.to(device=cache.device), rows.to(cache.device, non_blocking=True))
             return
 
         from freetoken.kernel import fast_index_copy_jit

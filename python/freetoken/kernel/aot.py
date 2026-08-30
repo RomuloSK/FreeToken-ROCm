@@ -203,11 +203,13 @@ def _resolve_specs(specs: Iterable[KernelSpec | str] | None) -> tuple[KernelSpec
 
 
 def _built_shared_object(build_dir: pathlib.Path, name: str) -> pathlib.Path:
-    candidates = [
-        path
-        for path in build_dir.rglob(f"{name}.so")
-        if path.parent.name == name or path.parent.name.startswith(f"{name}_")
-    ]
+    candidates = []
+    for suffix in (".so", ".pyd", ".dll"):
+        candidates.extend(
+            path
+            for path in build_dir.rglob(f"{name}{suffix}")
+            if path.parent.name == name or path.parent.name.startswith(f"{name}_")
+        )
     if not candidates:
         raise RuntimeError(f"Compiled kernel {name!r} was not found under {build_dir}")
     return max(candidates, key=lambda path: path.stat().st_mtime_ns)
@@ -219,7 +221,10 @@ def _copy_kernel(build_dir: pathlib.Path, out_dir: pathlib.Path, name: str) -> p
     if dst_dir.exists():
         shutil.rmtree(dst_dir)
     dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = dst_dir / f"{name}.so"
+    # Keep the platform suffix.  ``kernel.utils._load_prebuilt`` accepts all
+    # three forms and this lets Windows ROCm wheels carry native ``.pyd``
+    # modules without post-build renaming.
+    dst = dst_dir / f"{name}{src.suffix}"
     shutil.copy2(src, dst)
     return dst
 

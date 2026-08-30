@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List
 
@@ -8,6 +9,7 @@ import torch
 from freetoken.core import Batch, Req, get_global_ctx
 from freetoken.distributed import get_tp_info
 from freetoken.utils import init_logger, mem_GB
+from freetoken.utils.accelerator import detect_device_capabilities
 from freetoken.utils.progress import emit_progress
 from tqdm import tqdm
 
@@ -106,6 +108,32 @@ class GraphRunner:
         dummy_req: Req,
         moe_offload_cache: OffloadMoeCache | None = None,
     ) -> None:
+        # A HIP driver may support pinned async copies but refuse to expose a
+        # device alias for registered host pages.  In that situation the MoE
+        # cache deliberately stages rows through Torch (which synchronises a
+        # small host index list and cannot be captured).  Disable GPU graph
+        # capture up front instead of discovering this inside a capture and
+        # leaving a half-built graph map behind.
+        if moe_offload_cache is not None and getattr(moe_offload_cache, "_staged_copy_required", False):
+            logger.warning(
+                "Mapped host memory is unavailable; disabling GPU graph capture "
+                "and using staged MoE copies"
+            )
+            cuda_graph_bs = []
+            cuda_graph_max_bs = 0
+        capabilities = detect_device_capabilities()
+        if os.getenv("FREETOKEN_DISABLE_GPU_GRAPHS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            logger.info_rank0("GPU graph capture disabled by FREETOKEN_DISABLE_GPU_GRAPHS")
+            cuda_graph_bs = []
+            cuda_graph_max_bs = 0
+        elif not capabilities.supports_graphs:
+            logger.warning(
+                "GPU graph capture is unavailable on %s/%s; using eager execution",
+                capabilities.kind.value,
+                capabilities.architecture,
+            )
+            cuda_graph_bs = []
+            cuda_graph_max_bs = 0
         cuda_graph_bs = _determine_cuda_graph_bs(
             cuda_graph_bs=cuda_graph_bs,
             cuda_graph_max_bs=cuda_graph_max_bs,
@@ -118,7 +146,32 @@ class GraphRunner:
         self.moe_offload_cache = moe_offload_cache
         self.stream = stream
         self.device = device
-        self._capture_graphs(max_seq_len, vocab_size, model)
+        try:
+            self._capture_graphs(max_seq_len, vocab_size, model)
+        except Exception as exc:
+            # A compatible HIP driver can expose graph symbols yet reject a
+            # particular capture (for example after a mapped-host probe or on
+            # an older MI50 graph implementation).  Eager execution remains a
+            # correct fallback; do not make server startup depend on graph
+            # capture support.
+            logger.warning(
+                "GPU graph capture failed (%s: %s); disabling GPU graphs and "
+                "continuing with eager execution",
+                type(exc).__name__,
+                exc,
+            )
+            self.graph_map = {}
+            self.buffer = None
+            self.max_graph_bs = 0
+            self.graph_bs_list = []
+            try:
+                self._reset_moe_offload_cache()
+            except Exception as reset_exc:
+                logger.warning(
+                    "MoE cache reset after failed GPU graph capture also failed: %s: %s",
+                    type(reset_exc).__name__,
+                    reset_exc,
+                )
 
     def _reset_moe_offload_cache(self) -> None:
         if self.moe_offload_cache is not None:
@@ -130,10 +183,10 @@ class GraphRunner:
         # loader would sit at 100% (last byte bar) until the ready ack. total=0 ⇒ the desktop
         # reads it as an indeterminate phase and animates the bar. Must precede the
         # graphs-disabled early return so that config gets the phase too.
-        emit_progress("Capturing CUDA graphs / warming up", 0, 0)
+        emit_progress("Capturing GPU graphs / warming up", 0, 0)
         self.graph_map: Dict[int, torch.cuda.CUDAGraph] = {}
         if self.max_graph_bs == 0:
-            return logger.info_rank0("CUDA graph is disabled.")
+            return logger.info_rank0("GPU graph capture is disabled.")
 
         self.attn_backend.init_capture_graph(max_seq_len=max_seq_len, bs_list=self.graph_bs_list)
 
@@ -141,23 +194,23 @@ class GraphRunner:
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(self.device)
 
-        logger.info_rank0(f"Start capturing CUDA graphs with sizes: {self.graph_bs_list}")
+        logger.info_rank0(f"Start capturing GPU graphs with sizes: {self.graph_bs_list}")
         free_memory = get_free_memory(self.device)
-        logger.info_rank0(f"Free GPU memory before capturing CUDA graphs: {mem_GB(free_memory)}")
+        logger.info_rank0(f"Free GPU memory before capturing GPU graphs: {mem_GB(free_memory)}")
 
         self.buffer = GraphCaptureBuffer.init(self.max_graph_bs, vocab_size, self.device)
         self._reset_moe_offload_cache()
 
         pbar = tqdm(
             sorted(self.graph_bs_list, reverse=True),
-            desc="Preparing for capturing CUDA graphs...",
+            desc="Preparing for capturing GPU graphs...",
             unit="batch",
             disable=not get_tp_info().is_primary(),  # disable for non-primary ranks
         )
         pool = None
         for bs in pbar:
             free_memory = get_free_memory(self.device)
-            pbar.desc = f"Capturing graphs: bs = {bs:<3} | avail_mem = {mem_GB(free_memory)}"
+            pbar.desc = f"Capturing GPU graphs: bs = {bs:<3} | avail_mem = {mem_GB(free_memory)}"
             pbar.refresh()
             graph = torch.cuda.CUDAGraph()
             batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
@@ -184,7 +237,7 @@ class GraphRunner:
 
         self._reset_moe_offload_cache()
         free_memory = get_free_memory(self.device)
-        logger.info_rank0(f"Free GPU memory after capturing CUDA graphs: {mem_GB(free_memory)}")
+        logger.info_rank0(f"Free GPU memory after capturing GPU graphs: {mem_GB(free_memory)}")
 
     def can_use_cuda_graph(self, batch: Batch) -> bool:
         return batch.is_decode and batch.size <= self.max_graph_bs

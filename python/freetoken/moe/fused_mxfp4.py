@@ -97,7 +97,7 @@ def run_mxfp4_prefill_experts_t(
     )
 
     if not hidden_states.is_cuda:
-        raise RuntimeError("GPT-OSS MXFP4 MoE requires the Triton CUDA kernel")
+        raise RuntimeError("GPT-OSS MXFP4 MoE requires the Triton GPU kernel")
     if not hidden_states.is_contiguous():
         hidden_states = hidden_states.contiguous()
     if not topk_weights.is_contiguous():
@@ -226,7 +226,7 @@ def run_mxfp4_splitk_decode_experts(
     from freetoken.kernel import gpt_oss_swiglu_triton, mxfp4_splitk_gemv_triton
 
     if not hidden_states.is_cuda:
-        raise RuntimeError("GPT-OSS MXFP4 MoE requires the Triton CUDA kernel")
+        raise RuntimeError("GPT-OSS MXFP4 MoE requires the Triton GPU kernel")
     if not hidden_states.is_contiguous():
         hidden_states = hidden_states.contiguous()
 

@@ -17,8 +17,9 @@ Public entry points:
   l2norm + delta-rule update + per-slot state read/write, all in one kernel.
 
 Provenance: https://github.com/sgl-project/sglang, ``python/sglang/srt/layers/attention/fla/``
-(NVIDIA path only; the ``is_intel`` XPU branch and the ``torch_release`` sglang import were
-stripped/inlined on vendoring). Keep ``chunk_delta_h.py``'s single fixed ``triton.Config`` — restoring
+(the ``is_intel`` XPU branch and the ``torch_release`` sglang import were stripped/inlined on
+vendoring). HIP uses the same Triton kernels with the device-library math fallbacks in ``op.py``.
+Keep ``chunk_delta_h.py``'s single fixed ``triton.Config`` — restoring
 upstream's multi-config autotune corrupts the in-place state pool. Tune via the env knobs
 ``SGLANG_GDN_CHUNK_H_BV`` / ``SGLANG_GDN_CHUNK_H_NUM_WARPS`` / ``SGLANG_GDN_CHUNK_H_NUM_STAGES``.
 """

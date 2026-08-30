@@ -168,6 +168,22 @@ def create_attention_backend(
     config: ModelConfig,
 ) -> BaseAttnBackend:
     validate_attn_backend(backend, allow_auto=False)
+    # Keep the guard at the factory boundary as well as Engine's config
+    # validation: library users may construct an attention backend directly,
+    # and importing a CUDA-only extension on a HIP process gives an opaque
+    # loader error instead of an actionable fallback.
+    from freetoken.utils.accelerator import is_rocm
+
+    if is_rocm() and any(
+        attention_backend_info(part).requires_flashinfer
+        or attention_backend_info(part).requires_sgl_kernel
+        or attention_backend_info(part).requires_sm100
+        for part in backend.split(",")
+    ):
+        raise RuntimeError(
+            f"Attention backend {backend!r} is CUDA-only and is not available on ROCm. "
+            "Use --attention-backend triton (or auto)."
+        )
     if "," in backend:
         p_backend, d_backend = backend.split(",", 1)
         if p_backend != d_backend:

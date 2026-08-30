@@ -16,7 +16,15 @@ from freetoken.models import create_model, load_weight
 from freetoken.moe import create_moe_backend, is_offload_moe_backend
 from freetoken.moe.expert_banks import load_expert_banks
 from freetoken.moe.offload_cache import OffloadMoeCache, attach_offload_moe_cache
-from freetoken.utils import align_ceil, init_logger, is_sm90_family, is_sm100_family, mem_GB, torch_dtype
+from freetoken.utils import (
+    align_ceil,
+    init_logger,
+    is_rocm,
+    is_sm90_family,
+    is_sm100_family,
+    mem_GB,
+    torch_dtype,
+)
 
 from .config import EngineConfig
 from .graph import GraphRunner, get_free_memory
@@ -105,6 +113,13 @@ def _backend_requirements_met(name: str) -> bool:
     # flashinfer first across ALL parts: the sgl probe logs a "falls back to fi" warning,
     # which would mislead when the candidate is about to fail on flashinfer anyway.
     infos = [attention_backend_info(part) for part in name.split(",")]
+    # FlashInfer, sgl_kernel, and TensorRT-LLM currently ship CUDA-only
+    # extensions.  A package can be importable in a mixed environment while
+    # still failing at its first kernel launch, so never select it on HIP.
+    if is_rocm() and any(
+        i.requires_flashinfer or i.requires_sgl_kernel or i.requires_sm100 for i in infos
+    ):
+        return False
     if any(i.requires_flashinfer for i in infos) and not _flashinfer_available():
         return False
     if any(i.requires_sgl_kernel for i in infos) and not _sgl_flash_attn_available():
@@ -197,6 +212,13 @@ def _validate_attention_backend_choice(config, override, required: frozenset[Att
     # explicit --attention-backend choices.
     for part in backend_parts:
         info = attention_backend_info(part)
+        if is_rocm() and (
+            info.requires_flashinfer or info.requires_sgl_kernel or info.requires_sm100
+        ):
+            raise RuntimeError(
+                f"Attention backend {config.attention_backend!r} is CUDA-only and is not "
+                "available on ROCm. Use --attention-backend triton (or auto)."
+            )
         if info.requires_flashinfer and not _flashinfer_available():
             raise RuntimeError(
                 f"Attention backend {config.attention_backend!r} requires flashinfer, which is "
@@ -426,6 +448,28 @@ class Engine:
             self._warmup_prefill()
 
     def _init_communication(self, config: EngineConfig) -> torch.distributed.ProcessGroup:
+        # ROCm's PyTorch ``nccl`` backend is backed by RCCL.  The custom PyNCCL
+        # extension uses NVIDIA-only NCCL window APIs, so ROCm must initialize
+        # the regular RCCL process group even when the legacy use_pynccl flag is
+        # left at its default value.
+        if is_rocm() and config.tp_info.size > 1:
+            if not torch.distributed.is_available() or not torch.distributed.is_nccl_available():
+                raise RuntimeError(
+                    "ROCm tensor parallelism requires a PyTorch distributed build "
+                    "with RCCL (the 'nccl' backend). Install the matching ROCm "
+                    "Torch/device artifacts or reduce --tp-size to 1."
+                )
+            torch.distributed.init_process_group(
+                backend="nccl",
+                rank=config.tp_info.rank,
+                world_size=config.tp_info.size,
+                timeout=timedelta(seconds=config.distributed_timeout),
+                init_method=config.distributed_addr,
+            )
+            tp_cpu_group = torch.distributed.new_group(backend="gloo")
+            assert tp_cpu_group is not None
+            return tp_cpu_group
+
         if config.tp_info.size == 1 or config.use_pynccl:
             torch.distributed.init_process_group(
                 backend="gloo",

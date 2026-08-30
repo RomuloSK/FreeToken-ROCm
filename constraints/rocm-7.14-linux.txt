@@ -1,0 +1,14 @@
+# FreeToken ROCm 7.14 / Linux x86_64 compatibility constraints.
+#
+# This is deliberately a small, reviewable stack lock.  The remaining Python
+# dependencies are constrained by pyproject.toml's lower/upper bounds and are
+# resolved from PyPI.  The ROCm Torch wheel must come from the selected vendor or
+# internal artifact index; never mix it with a CUDA Torch wheel from PyPI.
+#
+# Use with: uv pip install -c constraints/rocm-7.14-linux.txt 'freetoken[rocm]'
+# The installer supplies the Torch index and verifies torch.version.hip.
+
+torch==2.11.0
+triton==3.6.0
+apache-tvm-ffi==0.1.13.post3
+flashlib==0.3.0

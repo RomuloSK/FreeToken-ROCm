@@ -288,8 +288,16 @@ private:
   auto m_check(DLDevice value) const -> bool {
     return stdr::empty(m_options) ||
            (stdr::any_of(m_options, [value](const DLDevice &opt) {
-             // device type must exactly match
-             if (opt.device_type != value.device_type)
+             // PyTorch's HIP tensors are exposed through the CUDA namespace,
+             // but DLPack/tvm-ffi may preserve the native ROCm device code.
+             // Treat the CUDA/ROCm pairs as one accelerator family while
+             // retaining strict CPU/host/device separation.
+             const auto same_accelerator =
+                 (opt.device_type == kDLCUDA && value.device_type == kDLROCM) ||
+                 (opt.device_type == kDLROCM && value.device_type == kDLCUDA) ||
+                 (opt.device_type == kDLCUDAHost && value.device_type == kDLROCMHost) ||
+                 (opt.device_type == kDLROCMHost && value.device_type == kDLCUDAHost);
+             if (opt.device_type != value.device_type && !same_accelerator)
                return false;
              // device id can be wildcarded
              return opt.device_id == details::kAnyDeviceID ||

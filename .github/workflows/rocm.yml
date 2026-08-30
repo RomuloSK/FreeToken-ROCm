@@ -1,0 +1,172 @@
+# ROCm packaging and hardware validation.
+#
+# The metadata job runs on every scheduled/manual invocation. Hardware jobs are
+# deliberately opt-in: the public repository does not currently have AMD
+# runners, and untrusted pull requests must never execute on a future
+# self-hosted GPU host. Use workflow_dispatch with run_hardware=true when an RX
+# 7600 or the ROCm 10.x-compatible MI50 host is available.
+name: ROCm validation
+
+on:
+  schedule:
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+    inputs:
+      run_hardware:
+        description: "Run on the configured self-hosted ROCm runners"
+        type: boolean
+        required: false
+        default: false
+      channel:
+        description: "ROCm channel (rocm7.14 or rocm10-mi50)"
+        type: choice
+        required: false
+        default: rocm7.14
+        options:
+          - rocm7.14
+          - rocm10-mi50
+      artifact_index:
+        description: "Optional FreeToken/driver artifact index"
+        type: string
+        required: false
+        default: ""
+      torch_index:
+        description: "Optional compatible Torch index (required for MI50)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rocm-validation
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Validate ROCm metadata and installers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6
+        with:
+          python-version: "3.12"
+      - name: Validate package extras and constraints
+        run: |
+          python - <<'PY'
+          import pathlib
+          import tomllib
+
+          root = pathlib.Path('.')
+          project = tomllib.loads((root / 'pyproject.toml').read_text())
+          extras = set(project['project']['optional-dependencies'])
+          required = {'cuda', 'rocm', 'accel'}
+          missing = required - extras
+          if missing:
+              raise SystemExit(f'missing extras: {sorted(missing)}')
+          for name in (
+              'rocm-7.14-linux.txt',
+              'rocm-7.14-windows.txt',
+              'rocm-10.x-mi50-linux.txt',
+          ):
+              path = root / 'constraints' / name
+              text = path.read_text()
+              if 'torch==' not in text:
+                  raise SystemExit(f'{path} does not pin torch')
+          print('ROCm extras and constraints OK')
+          PY
+      - name: Shell syntax and installer help
+        run: |
+          bash -n scripts/install-rocm.sh
+          bash scripts/install-rocm.sh --help >/dev/null
+
+  rocm-linux:
+    name: ROCm Linux smoke (${{ inputs.channel || 'rocm7.14' }})
+    needs: metadata
+    if: github.event_name == 'workflow_dispatch' && inputs.run_hardware == true
+    runs-on: [self-hosted, linux, rocm]
+    timeout-minutes: 45
+    env:
+      FREETOKEN_ARTIFACT_INDEX: ${{ inputs.artifact_index }}
+      ROCM_TORCH_INDEX_URL: ${{ inputs.torch_index }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install FreeToken ROCm channel
+        run: |
+          bash scripts/install-rocm.sh \
+            --channel "${{ inputs.channel }}" \
+            --artifact-index "${{ inputs.artifact_index }}" \
+            --torch-index "${{ inputs.torch_index }}" \
+            --yes
+      - name: Diagnose accelerator
+        run: |
+          source "$HOME/.freetoken-rocm/venv/bin/activate"
+          ft diagnose --json
+          python -c 'import torch; assert torch.version.hip; print(torch.__version__, torch.version.hip)'
+      - name: Basic server import smoke
+        run: |
+          source "$HOME/.freetoken-rocm/venv/bin/activate"
+          python -c 'import freetoken; print("freetoken import OK")'
+      - name: ROCm contract and cache smoke tests
+        run: |
+          source "$HOME/.freetoken-rocm/venv/bin/activate"
+          python -m pytest -q tests/rocm
+
+  rocm-windows:
+    name: ROCm Windows Radeon smoke
+    needs: metadata
+    # MI50 remains Linux-only; the Windows runner is the current Radeon lane.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_hardware == true && inputs.channel != 'rocm10-mi50'
+    runs-on: [self-hosted, windows, rocm]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install FreeToken ROCm channel
+        shell: pwsh
+        env:
+          ROCM_TORCH_INDEX_URL: ${{ inputs.torch_index }}
+          FREETOKEN_ARTIFACT_INDEX: ${{ inputs.artifact_index }}
+        run: |
+          & .\scripts\install-rocm.ps1 `
+            -Channel rocm7.14 `
+            -ArtifactIndex "${{ inputs.artifact_index }}" `
+            -TorchIndex "${{ inputs.torch_index }}" `
+            -Yes
+      - name: Diagnose accelerator
+        shell: pwsh
+        run: |
+          & "$HOME\.freetoken-rocm\venv\Scripts\ft.exe" diagnose --json
+          & "$HOME\.freetoken-rocm\venv\Scripts\python.exe" -c "import torch; assert torch.version.hip; print(torch.__version__, torch.version.hip)"
+      - name: ROCm contract smoke tests
+        shell: pwsh
+        run: |
+          & "$HOME\.freetoken-rocm\venv\Scripts\python.exe" -m pytest -q tests/rocm
+
+  rocm-mi50-two-card:
+    name: ROCm 10.x MI50 two-card RCCL smoke
+    needs: metadata
+    # This lane becomes active when the compatible-driver host is provisioned;
+    # it is deliberately manual until the two MI50 cards are available.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_hardware == true && inputs.channel == 'rocm10-mi50'
+    runs-on: [self-hosted, linux, rocm, mi50]
+    timeout-minutes: 30
+    env:
+      FREETOKEN_ARTIFACT_INDEX: ${{ inputs.artifact_index }}
+      ROCM_TORCH_INDEX_URL: ${{ inputs.torch_index }}
+      HIP_VISIBLE_DEVICES: "0,1"
+      ROCR_VISIBLE_DEVICES: "0,1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install compatible ROCm 10.x MI50 channel
+        run: |
+          test -n "${ROCM_TORCH_INDEX_URL}" || { echo 'MI50 requires a Torch artifact index'; exit 1; }
+          bash scripts/install-rocm.sh --channel rocm10-mi50 --arch gfx906 \
+            --artifact-index "${FREETOKEN_ARTIFACT_INDEX}" \
+            --torch-index "${ROCM_TORCH_INDEX_URL}" --yes
+      - name: Validate two-card RCCL tensor parallelism
+        run: |
+          source "$HOME/.freetoken-rocm/venv/bin/activate"
+          ft diagnose --json
+          torchrun --standalone --nproc_per_node=2 tests/rocm/rccl_smoke.py

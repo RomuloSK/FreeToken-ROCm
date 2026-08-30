@@ -38,6 +38,11 @@ def _env_force() -> bool:
 
 
 FORCE_EMU = _env_force()
+_TORCH_VERSION = getattr(torch, "version", None)
+_IS_CUDA = (
+    getattr(_TORCH_VERSION, "hip", None) is None
+    and getattr(_TORCH_VERSION, "cuda", None) is not None
+)
 
 if FORCE_EMU and "TRITON_CACHE_DIR" not in os.environ:
     os.environ["TRITON_CACHE_DIR"] = os.path.join(
@@ -63,7 +68,7 @@ def e4m3_native() -> bool:
             from freetoken.gpu_select import assigned_visible_gpu
 
             # one process runs on one GPU, so its convention is that GPU's; None (-> the current device) only before the process binds
-            _native = torch.cuda.get_device_capability(assigned_visible_gpu()) >= (8, 9)
+            _native = _IS_CUDA and torch.cuda.get_device_capability(assigned_visible_gpu()) >= (8, 9)
     return _native
 
 
@@ -85,6 +90,8 @@ def e4m3_native_cx():
     Delegates to ``target_info`` (reads the active driver's target, so
     cross-compilation tests that patch ``driver.active.get_current_target``
     resolve consistently)."""
+    if not _IS_CUDA:
+        return False
     return not FORCE_EMU and target_info.cuda_capability_geq(8, 9)
 
 

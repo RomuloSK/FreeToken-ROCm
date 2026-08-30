@@ -46,6 +46,7 @@ import os
 import torch
 
 from freetoken.utils import init_logger
+from freetoken.utils.accelerator import is_rocm
 
 logger = init_logger(__name__)
 
@@ -214,6 +215,14 @@ def select_nvfp4_backend(
             f"bad --nvfp4-backend={requested!r}; expected auto, marlin, flashinfer or triton"
         )
     if requested == "triton":
+        return "triton"
+    if is_rocm(device.index):
+        if requested in ("marlin", "flashinfer"):
+            raise RuntimeError(
+                f"--nvfp4-backend={requested} requires CUDA donor kernels and is not "
+                "available on ROCm; use --nvfp4-backend triton (or auto)."
+            )
+        logger.info("NVFP4 auto backend: using ROCm Triton inline-dequant kernels")
         return "triton"
     if activation != "silu":
         if requested != "auto":

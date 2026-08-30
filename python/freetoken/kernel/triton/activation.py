@@ -18,8 +18,15 @@ import functools
 import torch
 import triton
 import triton.language as tl
-from triton.language.extra import libdevice
-from triton.language.extra.cuda import gdc_wait, gdc_launch_dependents
+
+_TORCH_VERSION = getattr(torch, "version", None)
+_IS_NVIDIA = (
+    getattr(_TORCH_VERSION, "hip", None) is None
+    and getattr(_TORCH_VERSION, "cuda", None) is not None
+)
+# ROCm Triton does not ship CUDA's grid-dependency-control intrinsics; the
+# compatibility module supplies a constexpr-safe no-op implementation there.
+from freetoken.kernel.triton.compat import gdc_wait, gdc_launch_dependents
 
 from freetoken.utils.arch import is_sm90_supported
 
@@ -36,8 +43,6 @@ _SQRT_2_OVER_PI = 0.7978845608028654  # sqrt(2/pi)
 _GELU_C = 0.044715
 
 _LOG2E = tl.constexpr(1.4426950408889634)
-
-
 @functools.cache
 def _pdl_supported() -> bool:
     # PDL / griddepcontrol is an sm_90+ (Hopper/Blackwell) feature; pre-Hopper
@@ -48,20 +53,25 @@ def _pdl_supported() -> bool:
 
 @triton.jit
 def _fast_tanh(x):
-    # PTX tanh.approx.f32 — single HW op, matches flashinfer math::tanh.
-    return tl.inline_asm_elementwise(
-        "tanh.approx.f32 $0, $1;", "=f,f", [x],
-        dtype=tl.float32, is_pure=True, pack=1,
-    )
+    # PTX is only legal for CUDA targets.  The AMD path deliberately uses the
+    # Triton math primitive so the compiler lowers it to the active HIP device
+    # library instead of trying to parse a CUDA constraint string.
+    if _IS_NVIDIA:
+        return tl.inline_asm_elementwise(
+            "tanh.approx.f32 $0, $1;", "=f,f", [x],
+            dtype=tl.float32, is_pure=True, pack=1,
+        )
+    return tl.math.tanh(x)
 
 
 @triton.jit
 def _fast_ex2(x):
-    # PTX ex2.approx.f32 — matches __expf fast path used by flashinfer silu.
-    return tl.inline_asm_elementwise(
-        "ex2.approx.f32 $0, $1;", "=f,f", [x],
-        dtype=tl.float32, is_pure=True, pack=1,
-    )
+    if _IS_NVIDIA:
+        return tl.inline_asm_elementwise(
+            "ex2.approx.f32 $0, $1;", "=f,f", [x],
+            dtype=tl.float32, is_pure=True, pack=1,
+        )
+    return tl.math.exp2(x)
 
 
 @triton.jit
@@ -106,7 +116,7 @@ def _act_and_mul_kernel(
         act = gate / (1.0 + _fast_ex2(-gate * alpha * _LOG2E))
         y = act * (up + 1.0)
     else:  # GELU (erf)
-        act = 0.5 * gate * (1.0 + libdevice.erf(gate * 0.7071067811865476))
+        act = 0.5 * gate * (1.0 + tl.math.erf(gate * 0.7071067811865476))
         y = act * up
     out_row = out_ptr + row * d
     tl.store(out_row + cols, y.to(out_ptr.dtype.element_ty), mask=mask)

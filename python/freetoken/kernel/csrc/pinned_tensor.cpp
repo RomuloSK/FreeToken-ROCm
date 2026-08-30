@@ -1,5 +1,5 @@
 #include <cstdint>
-#include <cuda_runtime_api.h>
+#include <freetoken/runtime_compat.h>
 #include <torch/extension.h>
 
 namespace {
@@ -71,17 +71,37 @@ torch::Tensor alloc_pinned_tensor(std::vector<int64_t> sizes,
   return torch::from_blob(data_ptr, sizes, free_pinned, options);
 }
 
-// Pinned host memory is GPU-dereferenceable at its host VA only where UVA identity
-// holds (Linux; not Windows/WDDM, where cudaHostRegister'd memory maps to a different
-// device address). Zero-copy consumers resolve bank base addresses through these.
+// Pinned host memory is GPU-dereferenceable at its host VA only where the
+// runtime actually returns an identity mapping. Device attributes are only a
+// coarse capability hint: WDDM and compatible ROCm drivers can report UVA
+// support while a particular mapped allocation still receives a distinct
+// device address. Probe the same host-allocation path used by the offload bank
+// before allowing callers to skip address translation.
 bool host_ptr_identity() {
   int device = 0;
   const cudaError_t err = cudaGetDevice(&device);
-  TORCH_CHECK(err == cudaSuccess, "cudaGetDevice failed: ", cudaGetErrorString(err));
+  if (err != cudaSuccess) {
+    return false;
+  }
   int uva = 0, reg = 0;
-  cudaDeviceGetAttribute(&uva, cudaDevAttrUnifiedAddressing, device);
-  cudaDeviceGetAttribute(&reg, cudaDevAttrCanUseHostPointerForRegisteredMem, device);
-  return uva == 1 && reg == 1;
+  if (cudaDeviceGetAttribute(&uva, cudaDevAttrUnifiedAddressing, device) != cudaSuccess ||
+      cudaDeviceGetAttribute(&reg, cudaDevAttrCanUseHostPointerForRegisteredMem, device) !=
+          cudaSuccess ||
+      uva != 1 || reg != 1) {
+    return false;
+  }
+
+  void *host_ptr = nullptr;
+  if (cudaHostAlloc(&host_ptr, 4096,
+                    cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess) {
+    return false;
+  }
+  void *device_ptr = nullptr;
+  const cudaError_t map_err =
+      cudaHostGetDevicePointer(&device_ptr, host_ptr, 0);
+  const bool identity = map_err == cudaSuccess && device_ptr == host_ptr;
+  cudaFreeHost(host_ptr);
+  return identity;
 }
 
 int64_t host_device_ptr(int64_t host_ptr) {

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import triton
 import triton.language as tl
-from triton.language.extra.cuda import gdc_launch_dependents, gdc_wait
+from freetoken.kernel.triton.compat import gdc_launch_dependents, gdc_wait
 
 from freetoken.utils.arch import is_sm90_supported
 

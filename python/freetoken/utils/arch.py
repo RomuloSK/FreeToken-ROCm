@@ -3,6 +3,8 @@ from __future__ import annotations
 import functools
 from typing import Tuple
 
+from .accelerator import AcceleratorKind, detect_device_capabilities
+
 
 @functools.cache
 def _get_torch_cuda_version() -> Tuple[int, int] | None:
@@ -12,6 +14,24 @@ def _get_torch_cuda_version() -> Tuple[int, int] | None:
     if not torch.cuda.is_available() or not torch.version.cuda:
         return None
     return torch.cuda.get_device_capability()
+
+
+def device_arch(index: int | None = None) -> str:
+    """Return the normalized compiler target for the active device."""
+
+    return detect_device_capabilities(index).architecture
+
+
+def is_rocm_arch(index: int | None = None) -> bool:
+    return detect_device_capabilities(index).kind is AcceleratorKind.ROCM
+
+
+def is_cuda_arch(index: int | None = None) -> bool:
+    return detect_device_capabilities(index).kind is AcceleratorKind.CUDA
+
+
+def is_gfx_family(prefix: str, index: int | None = None) -> bool:
+    return is_rocm_arch(index) and device_arch(index).startswith(prefix.lower())
 
 
 def is_arch_supported(major: int, minor: int = 0) -> bool:

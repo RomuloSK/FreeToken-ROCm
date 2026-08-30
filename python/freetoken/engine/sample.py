@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
 import torch
-from freetoken.utils import is_sm90_supported, nvtx_annotate
+from freetoken.utils import is_cuda, is_sm90_supported, nvtx_annotate
 
 if TYPE_CHECKING:
     from freetoken.core import Batch
@@ -29,7 +29,7 @@ def sample_impl(
 ) -> torch.Tensor:
     from freetoken.kernel.backend import is_flashinfer_installed
 
-    if is_flashinfer_installed():
+    if is_cuda() and is_flashinfer_installed():
         import flashinfer.sampling as sampling
     else:
         import freetoken.kernel.triton.sampling as sampling

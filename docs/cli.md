@@ -12,6 +12,7 @@ ft <command> [args]
 | `ft launch` | Configure and launch a coding agent against a server |
 | `ft checkpoint` | Convert an HF checkpoint to the FTW fast-load format |
 | `ft bench bw` | Benchmark CPU vs PCIe bandwidth to calibrate the MoE backend |
+| `ft diagnose` | Report accelerator, driver/toolchain, extension, cache, graph, and fallback capabilities |
 
 `ft --version` prints the installed version (torch-free; nightly wheels carry a
 `+g<sha>` build stamp, tagged releases a bare version). Every command supports
@@ -24,7 +25,7 @@ ft serve --model <path-or-hf-id> [options]
 ```
 
 `--model` is the only required flag — dtype, attention backend, MoE backend,
-MoE cache size, KV capacity, CUDA-graph sizes and the tool-call/reasoning
+MoE cache size, GPU-graph sizes and the tool-call/reasoning
 parsers all resolve automatically from the checkpoint and the GPU.
 
 ### Model
@@ -40,17 +41,17 @@ parsers all resolve automatically from the checkpoint and the GPU.
 |---|---|---|
 | `--host` | 127.0.0.1 | Bind address |
 | `--port` | 1919 | Bind port |
-| `--gpu` | GPU 0 | GPU to run on: a UUID from `nvidia-smi -L` or an `nvidia-smi` index; see [below](#choosing-a-gpu) |
+| `--gpu` | GPU 0 | GPU to run on: a CUDA UUID/index or a ROCm-visible index/UUID; see [below](#choosing-a-gpu) |
 | `--max-running-requests` | 4 | Max concurrently running requests |
 | `--max-output-tokens` | 32768 | Default output budget for requests that omit one |
 | `--max-seq-len-override` | from checkpoint | Max sequence length |
 | `--max-prefill-length` | 8192 | Chunked-prefill chunk size in tokens |
-| `--cuda-graph-max-bs`, `--graph` | = max running requests | Max batch size captured as CUDA graphs |
+| `--graph-max-bs`, `--cuda-graph-max-bs`, `--graph` | = max running requests | Max batch size captured as GPU graphs (`--cuda-graph-max-bs` is a compatibility alias) |
 | `--decode-log-interval` | 40 | Scheduler status line every N decode steps |
 
 ### Choosing a GPU
 
-For example, a machine with an RTX 5090 and an RTX 3060 Ti:
+For NVIDIA, a machine with an RTX 5090 and an RTX 3060 Ti can be inspected with:
 
 ```console
 $ nvidia-smi -L
@@ -62,6 +63,19 @@ GPU 1: NVIDIA GeForce RTX 5090 (UUID: GPU-9e8d7c6b-5a49-4f13-8207-c1b0a4e6d3f5)
 ft serve --model ... --gpu 1             # by nvidia-smi index -- the 5090
 ft serve --model ... --gpu GPU-9e8d7c6b  # the same card by UUID (a unique prefix is enough)
 ```
+
+On ROCm, `rocminfo` reports the GFX target and visible devices. FreeToken
+honours `ROCR_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`, and
+`CUDA_VISIBLE_DEVICES`; the selected index is relative to the visible list:
+
+```console
+$ rocminfo | grep -m1 'Name:.*gfx'
+  Name:                    gfx1102
+$ ROCR_VISIBLE_DEVICES=0 ft serve --model ... --gpu 0
+```
+
+MI50 users should see `gfx906` and select the ROCm 10.x-compatible driver
+channel documented in [install.md](install.md#rocm-10x-compatible-mi50-linux-only).
 
 ### KV cache & memory
 
@@ -85,7 +99,7 @@ See [models.md](models.md#moe-backends) for what each backend does.
 | `--moe-cpu-threads` | physical cores | CPU worker threads for the cpu/hybrid executor |
 | `--moe-cpu-layers` | all on GPU | With `offload`: which MoE layers decode on CPU (`3,7,11`, a count, or a fraction) |
 | `--moe-hybrid-max-fetch` | auto | With `hybrid`: max experts fetched over PCIe per layer per step; rest computed on CPU |
-| `--moe-prefill-hit-d2d` | off | Prefill: copy cache-hit experts device-side, stream only misses (CUDA >= 13) |
+| `--moe-prefill-hit-d2d` | off | Prefill: copy cache-hit experts device-side, stream only misses when supported by the active GPU backend |
 | `--disable-moe-prefill-overlap` | overlap on | Disable the two-buffer prefill copy overlap |
 
 ### API behaviour
@@ -121,6 +135,18 @@ ft ctl [--base-url http://127.0.0.1:1919] [--timeout 10] [--json] <subcommand>
 | `cache` | `GET /v1/cache/status` | Cache pool table |
 | `cache --moe N \| --kv N \| --mamba N \| --swa N [--wait 300]` | `POST /v1/cache/rebuild` | Live pool resizing without a restart (`k`/`m` suffixes; `--kv`/`--swa` in tokens) |
 | `requests [--since N] [--limit N]` | `GET /v1/requests` | Recent request ring |
+
+## ft diagnose
+
+```bash
+ft diagnose [--json]
+```
+
+Reports the selected accelerator (`cuda` or `rocm`), normalized architecture
+(`sm_*` or `gfx*`), Torch/ROCm/compiler versions, native-extension status,
+kernel-cache compatibility, GPU-graph support, collective backend, and any
+correctness fallbacks. `--json` is intended for support bundles and CI smoke
+checks; it exits non-zero only when accelerator detection itself fails.
 
 ## ft launch
 
@@ -160,7 +186,7 @@ keeps them dense for resident serving. See the FTW caveats in
 ```bash
 ft bench bw                       # once per GPU
 ft bench bw --dtype nvfp4,bf16    # only the formats you serve
-ft bench bw --gpu 1               # a specific GPU (UUID or nvidia-smi index, as for ft serve)
+ft bench bw --gpu 1               # a specific GPU (UUID or visible-device index, as for ft serve)
 ```
 
 Measures host-RAM vs PCIe bandwidth with the real cpu/offload MoE kernels and writes a

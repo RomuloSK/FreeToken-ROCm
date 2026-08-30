@@ -1,4 +1,4 @@
-"""Borrowed llama.cpp GGUF dequant/GEMM CUDA kernels, JIT-compiled on first use.
+"""Borrowed llama.cpp GGUF dequant/GEMM GPU kernels, JIT-compiled on first use.
 
 The ``.cu``/``.cuh`` under ``csrc/gguf/`` are vendored verbatim from sgl-kernel
 (``csrc/quantization/gguf/``), which are themselves ports of llama.cpp. We compile
@@ -15,11 +15,45 @@ from __future__ import annotations
 import functools
 import os
 import pathlib
+import re
 import shutil
 
 import torch
 
 _CSRC = pathlib.Path(__file__).parent / "csrc" / "gguf"
+
+
+def _rocm_runtime() -> bool:
+    # Keep this module importable in CPU-only environments.  PyTorch ROCm
+    # intentionally reports its devices through ``torch.cuda``; the HIP
+    # runtime marker is the stable way to distinguish it from CUDA.
+    return bool(getattr(getattr(torch, "version", None), "hip", None))
+
+
+def _extension_name() -> str:
+    """Separate torch-extension build caches by accelerator/runtime/target."""
+
+    version = getattr(getattr(torch, "version", None), "hip", None) or getattr(
+        getattr(torch, "version", None), "cuda", None
+    )
+    runtime = re.sub(r"[^0-9a-z]+", "_", str(version or "unknown").lower()).strip("_")
+    if _rocm_runtime():
+        arch = (
+            os.getenv("FREETOKEN_KERNEL_CACHE_ARCHES")
+            or os.getenv("FREETOKEN_ROCM_ARCH")
+            or os.getenv("FREETOKEN_ROCM_ARCH_LIST", "")
+        )
+        arch_values = arch.replace(",", " ").replace(";", " ").split()
+        if not arch_values:
+            try:
+                from freetoken.kernel._toolchain import rocm_arch_list
+
+                arch_values = rocm_arch_list()
+            except Exception:
+                arch_values = []
+        arch = (arch_values or ["gfxauto"])[0].lower().split(":", 1)[0]
+        return f"freetoken_gguf_kernels_rocm{runtime}_{arch}"
+    return f"freetoken_gguf_kernels_cuda{runtime}"
 
 
 def _host_compiler() -> str | None:
@@ -50,9 +84,25 @@ def _c_compiler_for(cxx: str) -> str:
 @functools.cache
 def _module():
     from torch.utils.cpp_extension import load
+    from freetoken.kernel._toolchain import (
+        check_toolchain_matches_torch,
+        compiler_arch_flags,
+        runtime_include_dirs,
+    )
 
-    extra_cuda_cflags = ["-O3", "--expt-relaxed-constexpr"]
-    host_cxx = _host_compiler()
+    check_toolchain_matches_torch()
+
+    is_rocm = _rocm_runtime()
+    # ``extra_cuda_cflags`` is the name used by torch's extension loader for
+    # both nvcc and hipcc.  hipcc accepts the common optimisation/constexpr
+    # flags and uses ``--offload-arch`` for gfx targets.
+    extra_cuda_cflags = ["-O3"]
+    if not is_rocm:
+        extra_cuda_cflags.append("--expt-relaxed-constexpr")
+    else:
+        extra_cuda_cflags.extend(["-DUSE_ROCM=1", *compiler_arch_flags()])
+
+    host_cxx = None if is_rocm else _host_compiler()
     if host_cxx is not None:
         # Point both nvcc's host pass (-ccbin) and torch's C++ compile (CXX) at a
         # libtorch/nvcc-compatible compiler. Force (not setdefault): the system
@@ -64,10 +114,11 @@ def _module():
 
     # gguf_kernel.cu carries its own PYBIND11_MODULE (appended at the end), so a
     # plain `load` of the single source compiles + binds the ggml_* ops.
+    include_paths = [str(_CSRC), *runtime_include_dirs()]
     return load(
-        name="freetoken_gguf_kernels",
+        name=_extension_name(),
         sources=[str(_CSRC / "gguf_kernel.cu")],
-        extra_include_paths=[str(_CSRC)],
+        extra_include_paths=include_paths,
         extra_cuda_cflags=extra_cuda_cflags,
         verbose=True,
     )

@@ -6,17 +6,38 @@
 
 #include <ATen/Dispatch.h>
 
+// HIP keeps the CUDA-style source spelling for most device operations.  The
+// packed integer fallbacks live in ggml-common.h (which is included directly
+// after this file); this header only adapts the warp shuffle surface.
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_runtime.h>
+
+// HIP's shuffle primitive has no CUDA mask argument.  GGUF intentionally
+// operates on 32-lane sub-warps, which is valid on both wave32 and wave64.
+#ifndef __shfl_xor_sync
+#define __shfl_xor_sync(mask, var, lane_mask, width) __shfl_xor(var, lane_mask, width)
+#endif
+#endif
+
 #ifndef WARP_SIZE
 #define WARP_SIZE 32
 #endif
 
 // Warp-shuffle wrappers the donor pulls from sgl-kernel's utils.h (CUDA variants).
 #ifndef SGLANG_SHFL_XOR_SYNC
+#if defined(__HIP_PLATFORM_AMD__)
+#define SGLANG_SHFL_XOR_SYNC(mask, var, lane_mask) __shfl_xor((var), (lane_mask), 32)
+#else
 #define SGLANG_SHFL_XOR_SYNC(mask, var, lane_mask) __shfl_xor_sync((mask), (var), (lane_mask))
 #endif
+#endif
 #ifndef SGLANG_SHFL_XOR_SYNC_WIDTH
+#if defined(__HIP_PLATFORM_AMD__)
+#define SGLANG_SHFL_XOR_SYNC_WIDTH(mask, var, lane_mask, width) __shfl_xor((var), (lane_mask), (width))
+#else
 #define SGLANG_SHFL_XOR_SYNC_WIDTH(mask, var, lane_mask, width) \
   __shfl_xor_sync((mask), (var), (lane_mask), (width))
+#endif
 #endif
 
 #define DISPATCH_CASE_FLOAT_TYPES(...)                 \

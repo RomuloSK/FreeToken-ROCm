@@ -46,6 +46,10 @@ def load_batch_memcpy():
     (12.8/12.9 had an extra failIdx parameter); gate on the torch runtime version
     before paying for the JIT build, then verify with a real copy.
     """
+    if getattr(torch.version, "hip", None):
+        raise RuntimeError(
+            "cudaMemcpyBatchAsync is CUDA-only; ROCm uses the HIP staged-copy path"
+        )
     cuda = torch.version.cuda
     if cuda is None or tuple(int(x) for x in cuda.split(".")[:2]) < (13, 0):
         raise RuntimeError(f"cudaMemcpyBatchAsync binding requires CUDA >= 13.0 (torch built with {cuda})")

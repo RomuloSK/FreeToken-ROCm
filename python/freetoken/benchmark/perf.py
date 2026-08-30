@@ -15,6 +15,13 @@ def perf_cuda(
     cuda_graph_repetitions: int | None = 10,
 ) -> float:
     import torch
+    from freetoken.utils.accelerator import detect_device_capabilities
+
+    # PyTorch keeps the ``torch.cuda`` namespace for HIP, but graph support is
+    # driver-dependent.  Keep this benchmark usable on ROCm drivers that expose
+    # ordinary streams/events without exposing replayable GPU graphs.
+    if not detect_device_capabilities().supports_graphs:
+        cuda_graph_repetitions = None
 
     assert repetitions > 0
     tic = torch.cuda.Event(enable_timing=True)

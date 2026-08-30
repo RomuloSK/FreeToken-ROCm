@@ -78,6 +78,12 @@ def enable_pynccl_distributed(
     """
     if tp_info.size == 1:
         return
+    # PyNCCL is compiled against NVIDIA NCCL.  ROCm's ``nccl`` Torch backend
+    # is RCCL and is initialized by Engine._init_communication instead.
+    import torch
+
+    if getattr(torch.version, "hip", None):
+        return
     from freetoken.kernel import init_pynccl
 
     comm = init_pynccl(

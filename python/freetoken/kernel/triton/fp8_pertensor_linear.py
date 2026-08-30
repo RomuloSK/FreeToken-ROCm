@@ -60,6 +60,11 @@ def rowwise_scaled_mm_ok() -> bool:
     forced = os.environ.get("FREETOKEN_FP8_ROWWISE_MM")
     if forced in ("0", "1"):
         return forced == "1"
+    # ``torch._scaled_mm`` is a CUDA/cuBLASLt entry point.  ROCm uses the
+    # portable Triton W8A16 path below, including on drivers that expose a
+    # CUDA-compatible namespace for HIP tensors.
+    if getattr(getattr(torch, "version", None), "hip", None) is not None:
+        return False
     if not torch.cuda.is_available():
         return True
     from freetoken.gpu_select import assigned_visible_gpu

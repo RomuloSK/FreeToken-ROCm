@@ -6,11 +6,17 @@ import os
 
 import triton
 import triton.language as tl
-import triton.language.extra.libdevice as tldevice
+
+try:
+    import triton.language.extra.libdevice as tldevice
+except (ImportError, ModuleNotFoundError):
+    # ``libdevice`` is CUDA-specific. ROCm Triton still provides the portable
+    # tl.exp/log implementations used by the default path below.
+    tldevice = None
 
 from freetoken.kernel.fla.utils import is_gather_supported
 
-if os.environ.get("FLA_USE_FAST_OPS", "0") == "1":
+if os.environ.get("FLA_USE_FAST_OPS", "0") == "1" and tldevice is not None:
     exp = tldevice.fast_expf
     exp2 = tldevice.exp2
     log = tldevice.fast_logf

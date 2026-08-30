@@ -11,6 +11,22 @@ import functools
 import importlib.util
 
 
+def _cuda_runtime_present() -> bool:
+    try:
+        import torch
+
+        # Some vendor builds expose a CUDA compatibility version alongside
+        # HIP.  HIP must win here: FlashInfer and sgl_kernel are CUDA-only
+        # even when ``torch.version.cuda`` is populated for compatibility.
+        version = getattr(torch, "version", None)
+        return (
+            getattr(version, "hip", None) is None
+            and getattr(version, "cuda", None) is not None
+        )
+    except Exception:
+        return False
+
+
 def _importable(name: str) -> bool:
     # find_spec normally returns None when a package is absent, but it can raise
     # (broken parent package, or a meta_path finder that blocks the name); treat
@@ -23,12 +39,15 @@ def _importable(name: str) -> bool:
 
 @functools.cache
 def is_flashinfer_installed() -> bool:
-    return _importable("flashinfer")
+    # FlashInfer wheels are CUDA extensions.  In particular, an importable
+    # package from a shared environment must not make ROCm auto-selection pick a
+    # backend that will fail during its first launch.
+    return _cuda_runtime_present() and _importable("flashinfer")
 
 
 @functools.cache
 def is_sgl_kernel_installed() -> bool:
-    return _importable("sgl_kernel")
+    return _cuda_runtime_present() and _importable("sgl_kernel")
 
 
 @functools.cache

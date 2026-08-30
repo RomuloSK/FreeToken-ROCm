@@ -1,0 +1,9 @@
+# FreeToken ROCm 7.14 / Windows x86_64 compatibility constraints.
+#
+# AMD's Windows Radeon lane uses the Torch 2.12 device wheel.  The wheel is
+# intentionally resolved through ROCm_TORCH_INDEX_URL (or the artifact index),
+# rather than PyPI's CUDA/CPU builds.
+
+torch==2.12.0
+apache-tvm-ffi==0.1.13.post3
+flashlib==0.3.0

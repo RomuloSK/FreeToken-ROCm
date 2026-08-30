@@ -5,6 +5,10 @@
 #include <dlpack/dlpack.h>
 #include <tvm/ffi/extra/c_env_api.h>
 
+#if defined(__HIP_PLATFORM_AMD__)
+#include <freetoken/hip_compat.cuh>
+#endif
+
 #include <concepts>
 #include <cstddef>
 #include <source_location>
@@ -12,7 +16,18 @@
 
 namespace device {
 
+#if defined(__HIP_PLATFORM_AMD__)
+// hipcc defines this for an explicitly selected wavefront size.  The fallback
+// is the MI50/CDNA wave64 default; RDNA builds can request wave32 through the
+// compiler and get the same compile-time geometry.
+#if defined(__AMDGCN_WAVEFRONT_SIZE)
+inline constexpr auto kWarpThreads = static_cast<unsigned>(__AMDGCN_WAVEFRONT_SIZE);
+#else
+inline constexpr auto kWarpThreads = 64u;
+#endif
+#else
 inline constexpr auto kWarpThreads = 32u;
+#endif
 
 template <std::integral T, std::integral U>
 __always_inline __device__ constexpr auto div_ceil(T a, U b) {
@@ -40,18 +55,32 @@ __always_inline __device__ auto offset(const T *ptr, U... offset) -> const
 
 } // namespace pointer
 
+#if defined(__HIP_PLATFORM_AMD__)
+#define FREETOKEN_RUNTIME_NAME "HIP"
+#else
+#define FREETOKEN_RUNTIME_NAME "CUDA"
+#endif
+
 namespace PDL {
 
 template <bool kUsePDL> __always_inline __device__ void wait() {
+#if defined(__HIP_PLATFORM_AMD__)
+  (void)kUsePDL;
+#else
   if constexpr (kUsePDL) {
     asm volatile("griddepcontrol.wait;" ::: "memory");
   }
+#endif
 }
 
 template <bool kUsePDL> __always_inline __device__ void launch() {
+#if defined(__HIP_PLATFORM_AMD__)
+  (void)kUsePDL;
+#else
   if constexpr (kUsePDL) {
     asm volatile("griddepcontrol.launch_dependents;" :::);
   }
+#endif
 }
 
 } // namespace PDL
@@ -66,7 +95,7 @@ CUDA_CHECK(::cudaError_t error,
     -> void {
   if (error != ::cudaSuccess) {
     [[unlikely]];
-    ::host::panic(location, "CUDA error: ", ::cudaGetErrorString(error));
+    ::host::panic(location, FREETOKEN_RUNTIME_NAME " error: ", ::cudaGetErrorString(error));
   }
 }
 
@@ -115,6 +144,10 @@ public:
   }
 
   auto with_attr(bool use_pdl) -> LaunchKernel & {
+#if defined(__HIP_PLATFORM_AMD__)
+    // HIP does not expose CUDA's programmatic-stream-serialization attribute.
+    (void)use_pdl;
+#else
     if (use_pdl) {
       m_attr_cache.id = ::cudaLaunchAttributeProgrammaticStreamSerialization;
       m_attr_cache.val.programmaticStreamSerializationAllowed = 1;
@@ -123,6 +156,7 @@ public:
     } else {
       m_config.numAttrs = 0;
     }
+#endif
     return *this;
   }
 

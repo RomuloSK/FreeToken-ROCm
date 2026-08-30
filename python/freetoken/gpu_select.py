@@ -1,9 +1,9 @@
-"""--gpu for ft serve / bench bw / checkpoint: resolve entries to GPU UUIDs, bind by UUID at CUDA init.
+"""--gpu for ft serve / bench bw / checkpoint: resolve entries to GPU UUIDs, bind by UUID at GPU init.
 
 Three device-id namespaces, converted explicitly:
 - logical: position in the --gpu list == TP rank; each worker takes its own entry by rank and the id ends there.
-- physical: NVML / nvidia-smi order, carried as a GPU UUID (_assigned_physical); not affected by CUDA_VISIBLE_DEVICES.
-- visible: CUDA ordinal in this process (_assigned_visible), what torch.device("cuda", n) means.
+- physical: management-library order, carried as a GPU UUID (_assigned_physical); not affected by visibility variables.
+- visible: accelerator ordinal in this process (_assigned_visible), what torch.device("cuda", n) means.
 
 The parent resolves --gpu entries to full UUIDs via NVML (resolve_gpu_uuids) and fails fast on a typo.
 Each worker publishes its own entry (set_assigned_gpu / assign_gpu) and binds it when CUDA comes up (bind_assigned_gpu) by matching the UUID against CUDA's visible devices.
@@ -20,6 +20,17 @@ import os
 from typing import Sequence
 
 UUID_PREFIX = "GPU-"
+_VISIBILITY_VARS = ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+
+
+def _visibility_state() -> tuple[str | None, str | None]:
+    """Return the active accelerator visibility variable and its value."""
+
+    for name in _VISIBILITY_VARS:
+        value = os.environ.get(name)
+        if value is not None:
+            return name, value
+    return None, None
 
 
 def is_gpu_uuid(spec: str) -> bool:
@@ -35,8 +46,7 @@ def _canonical(entry: str) -> str:
     """A UUID in the exact form the driver matches (upper-case GPU- prefix), an index as-is."""
     if not (is_gpu_uuid(entry) or is_gpu_index(entry)):
         raise ValueError(
-            f"{entry!r} is neither a GPU UUID (GPU-xxxx..., as `nvidia-smi -L` prints) "
-            f"nor an nvidia-smi index"
+            f"{entry!r} is neither a GPU UUID (GPU-xxxx...) nor a visible GPU index"
         )
     return UUID_PREFIX + entry[len(UUID_PREFIX):] if is_gpu_uuid(entry) else entry
 
@@ -69,7 +79,7 @@ def single_gpu_arg(value: str) -> str:
 
 
 def _nvml_uuids() -> "list[str] | None":
-    """Full GPU UUIDs in physical (nvidia-smi) order, or None when NVML is unavailable.
+    """Full GPU UUIDs in physical management-library order, or None when unavailable.
 
     Own ctypes loader instead of torch's _raw_device_uuid_nvml: that helper only knows the Linux library name, raises (not None) when the library is missing, and is private API.
     NVML exports are cdecl on every platform, so CDLL is right on Windows too (same as nvidia-ml-py).
@@ -127,7 +137,7 @@ def _match_uuid(spec: str, uuids: "list[str]", where: str) -> str:
 def resolve_gpu_uuids(specs: Sequence[str]) -> "tuple[str, ...] | None":
     """--gpu entries -> full GPU UUIDs, one per TP rank; raises ValueError on a bad entry.
 
-    A preset CUDA_VISIBLE_DEVICES is a quota to stay inside: an index counts within that list, a UUID must name one of its entries.
+    A preset visibility variable is a quota to stay inside: an index counts within that list, a UUID must name one of its entries.
     Returns None when NVML is unavailable -- the worker then interprets the raw entries against CUDA's own enumeration (see bind_assigned_gpu).
     """
     specs = parse_gpu_spec(",".join(specs))
@@ -136,7 +146,7 @@ def resolve_gpu_uuids(specs: Sequence[str]) -> "tuple[str, ...] | None":
     uuids = _nvml_uuids()
     if uuids is None:
         return None
-    preset_raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    preset_name, preset_raw = _visibility_state()
     preset = None if preset_raw is None else [e.strip() for e in preset_raw.split(",") if e.strip()]
 
     resolved: list[str] = []
@@ -152,12 +162,12 @@ def resolve_gpu_uuids(specs: Sequence[str]) -> "tuple[str, ...] | None":
             entry = _preset_entry(spec, preset, preset_raw)
             # an integer entry is read in physical order, as under CUDA_DEVICE_ORDER=PCI_BUS_ID; a negative or MIG-form entry cannot name a whole GPU
             if is_gpu_uuid(entry):
-                resolved.append(_match_uuid(entry, uuids, f"(from CUDA_VISIBLE_DEVICES={preset_raw!r})"))
+                resolved.append(_match_uuid(entry, uuids, f"(from {preset_name}={preset_raw!r})"))
             elif is_gpu_index(entry) and int(entry) < len(uuids):
                 resolved.append(uuids[int(entry)])
             else:
                 raise ValueError(
-                    f"--gpu {spec}: cannot resolve CUDA_VISIBLE_DEVICES entry {entry!r} "
+                    f"--gpu {spec}: cannot resolve {preset_name} entry {entry!r} "
                     f"({len(uuids)} GPU(s) on this machine)"
                 )
     if len(set(resolved)) != len(resolved):
@@ -167,23 +177,25 @@ def resolve_gpu_uuids(specs: Sequence[str]) -> "tuple[str, ...] | None":
 
 def _preset_entry(spec: str, preset: "list[str]", preset_raw: str) -> str:
     """The CUDA_VISIBLE_DEVICES entry ``spec`` selects, else ValueError."""
+    visibility_name, _ = _visibility_state()
+    visibility_name = visibility_name or "GPU visibility"
     if not is_gpu_uuid(spec):
         idx = int(spec)
         if idx >= len(preset):
             raise ValueError(
                 f"--gpu {spec}: only {len(preset)} GPU(s) are visible through "
-                f"CUDA_VISIBLE_DEVICES={preset_raw!r} (indices count within that list)"
+                f"{visibility_name}={preset_raw!r} (indices count within that list)"
             )
         return preset[idx]
     if not all(is_gpu_uuid(p) for p in preset):
         raise ValueError(
-            f"--gpu {spec}: CUDA_VISIBLE_DEVICES={preset_raw!r} lists GPUs by index; "
+            f"--gpu {spec}: {visibility_name}={preset_raw!r} lists GPUs by index; "
             f"give --gpu as an index into that list"
         )
     hits = [p for p in preset if p.upper().startswith(spec.upper()) or spec.upper().startswith(p.upper())]
     if len(hits) != 1:
         raise ValueError(
-            f"--gpu {spec}: not one of the GPUs visible through CUDA_VISIBLE_DEVICES={preset_raw!r}"
+            f"--gpu {spec}: not one of the GPUs visible through {visibility_name}={preset_raw!r}"
         )
     return hits[0]
 
@@ -197,7 +209,7 @@ _assigned_visible: "int | None" = None
 def set_assigned_gpu(target: str) -> None:
     """Publish this process's GPU before CUDA init; second call must agree.
 
-    A UUID names a physical GPU and is converted at bind time; a bare index is already a visible ordinal (a preset CUDA_VISIBLE_DEVICES has narrowed to it).
+    A UUID names a physical GPU and is converted at bind time; a bare index is already a visible ordinal.
     """
     global _assigned_physical, _assigned_visible
     physical = target if is_gpu_uuid(target) else None
@@ -217,7 +229,7 @@ def assign_gpu(spec: "str | None") -> None:
 
 
 def _visible_of_physical(uuid: str) -> int:
-    """CUDA ordinal of the physical GPU ``uuid`` (or unique prefix) among this process's visible devices."""
+    """Visible ordinal of the physical GPU ``uuid`` (or unique prefix)."""
     import torch
 
     seen: list[str] = []
@@ -232,8 +244,8 @@ def _visible_of_physical(uuid: str) -> int:
     if hits:
         raise RuntimeError(f"--gpu {uuid}: not a unique prefix (visible: {', '.join(seen)})")
     raise RuntimeError(
-        f"GPU {uuid} is not visible to CUDA in this process "
-        f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')!r}, "
+        f"GPU {uuid} is not visible to the accelerator in this process "
+        f"(visibility={os.environ.get('CUDA_VISIBLE_DEVICES') or os.environ.get('HIP_VISIBLE_DEVICES') or os.environ.get('ROCR_VISIBLE_DEVICES')!r}, "
         f"visible: {', '.join(seen) or 'none'})"
     )
 
@@ -242,7 +254,7 @@ def bind_assigned_gpu(default: int = 0):
     """torch.cuda.set_device this process's GPU and return the device.
 
     ``default`` is a visible ordinal, used and recorded when nothing was published, so the process always knows which card it runs on.
-    A published UUID (or prefix) is matched against CUDA's own device list, so the result is right under any CUDA_DEVICE_ORDER.
+    A published UUID (or prefix) is matched against Torch's device list, so the result is right under any device ordering.
     """
     global _assigned_visible
     import torch
@@ -251,8 +263,8 @@ def bind_assigned_gpu(default: int = 0):
         _assigned_visible = default if _assigned_physical is None else _visible_of_physical(_assigned_physical)
     if not 0 <= _assigned_visible < torch.cuda.device_count():
         raise RuntimeError(
-            f"cannot use CUDA device {_assigned_visible}: only {torch.cuda.device_count()} device(s) visible "
-            f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')!r})"
+            f"cannot use GPU device {_assigned_visible}: only {torch.cuda.device_count()} device(s) visible "
+            f"(visibility={os.environ.get('CUDA_VISIBLE_DEVICES') or os.environ.get('HIP_VISIBLE_DEVICES') or os.environ.get('ROCR_VISIBLE_DEVICES')!r})"
         )
     device = torch.device("cuda", _assigned_visible)
     torch.cuda.set_device(device)
@@ -270,8 +282,13 @@ def assigned_visible_gpu() -> "int | None":
 
 
 def format_gpu_uuid(raw) -> str | None:
-    """nvidia-smi form GPU-<uuid> from a uuid.UUID."""
-    return None if raw is None else f"{UUID_PREFIX}{raw}"
+    """Canonical ``GPU-<uuid>`` spelling from CUDA or ROCr properties."""
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("ascii", "replace")
+    text = str(raw)
+    return text if text.upper().startswith(UUID_PREFIX) else f"{UUID_PREFIX}{text}"
 
 
 def gpu_identity(index: int) -> dict:

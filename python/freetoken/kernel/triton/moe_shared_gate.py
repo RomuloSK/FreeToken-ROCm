@@ -15,6 +15,7 @@ import torch
 import triton
 import triton.language as tl
 
+from freetoken.kernel.triton.compat import gdc_launch_dependents, gdc_wait
 from freetoken.utils.arch import is_sm90_supported
 
 
@@ -46,12 +47,12 @@ def _gate_sigmoid_kernel(
     w = tl.load(weight_ptr + offs, mask=mask, other=0.0).to(tl.float32)
 
     if launch_pdl:
-        tl.extra.cuda.gdc_wait()
+        gdc_wait()
 
     h = tl.load(hidden_ptr + row * stride_h + offs, mask=mask, other=0.0).to(tl.float32)
 
     if launch_pdl:
-        tl.extra.cuda.gdc_launch_dependents()
+        gdc_launch_dependents()
 
     tl.store(gate_ptr + row, tl.sigmoid(tl.sum(h * w, axis=0)))
 
@@ -95,14 +96,14 @@ def _gate_mul_add_kernel(
     mask = offs < HIDDEN
 
     if launch_pdl:
-        tl.extra.cuda.gdc_wait()
+        gdc_wait()
 
     gate = tl.load(gate_ptr + row)
     routed = tl.load(routed_ptr + row * stride_r + offs, mask=mask, other=0.0).to(tl.float32)
     shared = tl.load(shared_ptr + row * stride_s + offs, mask=mask, other=0.0).to(tl.float32)
 
     if launch_pdl:
-        tl.extra.cuda.gdc_launch_dependents()
+        gdc_launch_dependents()
 
     tl.store(out_ptr + row * stride_o + offs, routed + gate * shared, mask=mask)
 

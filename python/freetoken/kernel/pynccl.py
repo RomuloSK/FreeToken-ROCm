@@ -51,6 +51,12 @@ def init_pynccl(
 ) -> PyNCCLCommunicator:
     import torch
 
+    if getattr(torch.version, "hip", None):
+        raise RuntimeError(
+            "PyNCCL is CUDA/NCCL-only and cannot be initialized on ROCm. "
+            "Use the standard torch.distributed NCCL backend backed by RCCL."
+        )
+
     max_size_bytes = min(max_size_bytes, ENV.PYNCCL_MAX_BUFFER_SIZE.value)
 
     module = _load_nccl_module()

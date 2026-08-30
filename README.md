@@ -21,7 +21,7 @@ FreeToken is an edge-native Mixture-of-Experts (MoE) serving engine designed for
 - **Semantic-Aware Caching**: Features semantic anchor checkpoints for recurrent state and KV caches, allowing agentic context edits (e.g., tool calls, thinking blocks) to avoid redundant context recomputation.  
 - **Elastic Memory Management**: Supports dynamic, runtime VRAM re-allocation between expert caches and KV memory without engine restarts or weight reloading.  
 - **Broad MoE & Ecosystem Support**: Supports frontier open-weight MoE models (e.g., DeepSeek-V4-Flash, Qwen3.6-35B-A3B, GLM-5.2) across various parameter scales and quantization formats (e.g., MXFP4, NVFP4, FP8, BF16), with Anthropic/OpenAI-compatible APIs for seamless integration with real-world coding and tool-calling agents (e.g., Codex, Claude Code, OpenCode, OpenClaw, DeepSeek Harness). 
-- **Diverse Consumer Hardware**: Scales across consumer laptops, gaming desktops, and workstation GPUs, with native support for NVIDIA RTX 30, RTX 40, and RTX 50 series GPUs.  
+- **Diverse Consumer Hardware**: Scales across consumer laptops, gaming desktops, and workstation GPUs, with native support for NVIDIA RTX 30/40/50 GPUs and ROCm Radeon/Instinct devices. The ROCm 10.x-compatible MI50 (`gfx906`) lane is Linux-only and documented in [the install guide](docs/install.md#rocm-10x-compatible-mi50-linux-only).
 
 ## Getting Started
 
@@ -40,6 +40,14 @@ Install FreeToken with [uv](https://docs.astral.sh/uv/) (recommended) or pip:
 ```bash
 uv pip install "freetoken[accel]"
 ```
+
+For ROCm, use the channel-aware installer in
+[docs/install.md](docs/install.md#rocm-714-linux-and-windows-radeon), or install
+the explicit `freetoken[rocm]` extra after selecting the matching ROCm Torch
+wheel. `freetoken[accel]` remains the CUDA-compatible alias.
+
+The ROCm 10.x MI50 path is build-ready and hardware-validation pending; the
+first-class MI50 release claim is gated on three consecutive two-card nightlies.
 
 Or build from source:
 

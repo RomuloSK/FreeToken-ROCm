@@ -17,6 +17,7 @@ Commands:
   launch      Configure and launch an agent against a FreeToken server
   checkpoint  Convert an HF safetensors checkpoint to FTW
   bench       Run a micro-benchmark (e.g. "bench bw" = CPU vs PCIe bandwidth)
+  diagnose    Report accelerator, toolchain, and kernel capability details
 
 Use "ft <command> --help" for command-specific options.
 Use "ft --version" to print the FreeToken version.""",
@@ -90,6 +91,12 @@ def _run_bench(argv: list[str]) -> int:
     return 2
 
 
+def _run_diagnose(argv: list[str]) -> int:
+    from freetoken.diagnose import main
+
+    return main(argv, prog="ft diagnose")
+
+
 COMMANDS = {
     "serve": "_run_serve",
     "shell": "_run_shell",
@@ -98,6 +105,7 @@ COMMANDS = {
     "launch": "_run_launch",
     "checkpoint": "_run_checkpoint",
     "bench": "_run_bench",
+    "diagnose": "_run_diagnose",
 }
 
 
