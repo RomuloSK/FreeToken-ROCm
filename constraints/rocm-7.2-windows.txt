@@ -1,0 +1,5 @@
+# FreeToken ROCm 7.2 Windows constraints
+# AMD index 7.2.1 torch 2.9.1
+torch==2.9.1+rocm7.2.1
+apache-tvm-ffi==0.1.13.post3
+flashlib==0.3.0

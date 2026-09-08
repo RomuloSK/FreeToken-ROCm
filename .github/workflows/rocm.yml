@@ -68,7 +68,7 @@ jobs:
               raise SystemExit(f'missing extras: {sorted(missing)}')
           for name in (
               'rocm-7.14-linux.txt',
-              'rocm-7.14-windows.txt',
+              'rocm-7.2-windows.txt',
               'rocm-10.x-mi50-linux.txt',
           ):
               path = root / 'constraints' / name
@@ -130,7 +130,7 @@ jobs:
           FREETOKEN_ARTIFACT_INDEX: ${{ inputs.artifact_index }}
         run: |
           & .\scripts\install-rocm.ps1 `
-            -Channel rocm7.14 `
+            -Channel rocm7.2 `
             -ArtifactIndex "${{ inputs.artifact_index }}" `
             -TorchIndex "${{ inputs.torch_index }}" `
             -Yes

@@ -79,10 +79,12 @@ def fake_torch(monkeypatch):
     accelerator.detect_device_capabilities.cache_clear()
 
 
-def test_cpu_capabilities_are_safe_without_an_accelerator():
+def test_cpu_capabilities_are_safe_without_an_accelerator(fake_torch):
     accelerator = _accelerator_module()
 
-    accelerator.detect_device_capabilities.cache_clear()
+    # Isolate from real hardware: CI builders are CPU-only but developer
+    # machines (e.g. RX 7600) have a live ROCm device that must be masked.
+    fake_torch(_fake_torch(hip=None, props=None, available=False))
     caps = accelerator.detect_device_capabilities()
 
     assert caps.kind is accelerator.AcceleratorKind.CPU

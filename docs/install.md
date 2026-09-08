@@ -30,7 +30,7 @@ uv venv && source .venv/bin/activate
 uv pip install -e ".[accel]"
 ```
 
-## ROCm 7.14 (Linux and Windows Radeon)
+## ROCm Radeon (Linux 7.14 / Windows 7.2.1)
 
 The ROCm installer selects the Torch/device channel, detects the `gfx*` target,
 and installs the matching FreeToken and kernel-cache artifacts. It accepts an
@@ -46,13 +46,13 @@ source ~/.freetoken-rocm/venv/bin/activate
 ft diagnose --json
 ```
 
-Windows PowerShell (Windows 11 Radeon lane, Torch 2.12):
+Windows PowerShell (Windows 11 Radeon lane, ROCm 7.2.1 / Torch 2.9.1, Python 3.12 only):
 
 ```powershell
 git clone https://github.com/FlashML-org/FreeToken.git
 Set-Location FreeToken
-$env:ROCM_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/rocm7.14'
-& .\scripts\install-rocm.ps1 -Channel rocm7.14 -Yes
+$env:ROCM_TORCH_INDEX_URL = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/'
+& .\scripts\install-rocm.ps1 -Channel rocm7.2 -Yes
 & "$HOME\.freetoken-rocm\venv\Scripts\ft.exe" diagnose --json
 ```
 
@@ -64,7 +64,7 @@ uv pip install --constraint constraints/rocm-7.14-linux.txt \
   --extra-index-url "$ROCM_TORCH_INDEX_URL" 'freetoken[rocm]'
 ```
 
-The `rocm-7.14-windows.txt` constraints file pins the Windows Torch 2.12 lane.
+The `rocm-7.2-windows.txt` constraints file pins the Windows ROCm 7.2.1 / Torch 2.9.1 lane (Python 3.12 only). There is no ROCm 7.14 Windows lane; 7.14 stays Linux-only.
 The `rocm-7.14-linux.txt` file pins Linux Torch 2.11 and Triton 3.6.
 
 ## ROCm 10.x-compatible MI50 (Linux only)

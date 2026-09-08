@@ -6,10 +6,12 @@
 requires = [
     "setuptools>=77",
     # Keep the build requirement in lock-step with the runtime requirement.  The
-    # Windows ROCm wheel line currently uses Torch 2.12; the Linux/CUDA and
-    # Linux ROCm 7/10 lines use Torch 2.11.
+    # Windows ROCm lane uses AMD's published Torch 2.9.1+rocm7.2.1 device wheel
+    # (ROCm 7.2.1, repo.radeon.com); the Linux/CUDA and Linux ROCm 7/10 lines
+    # use Torch 2.11.  The Windows floor stays at 2.9.1 so the real AMD wheel
+    # resolves; the ceiling bars a silent breaking bump.
     "torch>=2.11,<2.12; platform_system != 'Windows'",
-    "torch>=2.12,<2.13; platform_system == 'Windows'",
+    "torch>=2.9.1,<2.13; platform_system == 'Windows'",
     "wheel",
 ]
 build-backend = "setuptools.build_meta"
@@ -62,11 +64,12 @@ dependencies = [
     "pyzmq>=27,<28",
     "safetensors>=0.6,<1",
     # Linux/CUDA and Linux ROCm 7/10 builds use Torch 2.11. Windows ROCm builds
-    # use the independently published Torch 2.12 device wheel. The installer
-    # supplies the vendor index; the markers keep a plain metadata resolve from
-    # selecting an incompatible cross-platform build.
+    # use AMD's independently published Torch 2.9.1+rocm7.2.1 device wheel from
+    # https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/ (ROCm 7.2.1). The
+    # installer supplies the vendor index; the markers keep a plain metadata
+    # resolve from selecting an incompatible cross-platform build.
     "torch>=2.11,<2.12; platform_system != 'Windows'",
-    "torch>=2.12,<2.13; platform_system == 'Windows'",
+    "torch>=2.9.1,<2.13; platform_system == 'Windows'",
     "tqdm>=4.66,<5",
     "transformers>=5.5,<6",
     "triton==3.6.0; platform_system == 'Linux'",
@@ -97,7 +100,7 @@ cuda = ["freetoken[fi,sgl]"]
 # installer controls wheel provenance.
 rocm = [
     "torch>=2.11,<2.12; platform_system == 'Linux'",
-    "torch>=2.12,<2.13; platform_system == 'Windows'",
+    "torch>=2.9.1,<2.13; platform_system == 'Windows'",
 ]
 # Backwards-compatible spelling used by existing CUDA installations.
 accel = ["freetoken[cuda]"]
